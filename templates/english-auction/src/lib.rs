@@ -53,6 +53,12 @@ impl EnglishAuctionContract {
     /// * `min_increment_bps` — minimum bid increment in basis points
     /// * `extension_window_seconds` — anti-sniping window; bids within this
     ///   window of the end extend the auction by `extension_window_seconds`
+    /// * `seller` â€” address selling the asset
+    /// * `asset_token` â€” contract address of the SEP-41 token being sold
+    /// * `payment_token` â€” contract address of the SEP-41 token used for bidding
+    /// * `asset_amount` â€” quantity of asset tokens offered for sale
+    /// * `reserve_price` â€” minimum starting bid in payment tokens
+    /// * `duration_seconds` â€” duration of the auction in seconds
     pub fn initialize(
         env: Env,
         seller: Address,
@@ -87,7 +93,6 @@ impl EnglishAuctionContract {
         env.storage().instance().set(&DataKey::PaymentToken, &payment_token);
         env.storage().instance().set(&DataKey::AssetAmount, &asset_amount);
         env.storage().instance().set(&DataKey::ReservePrice, &reserve_price);
-        env.storage().instance().set(&DataKey::StartTime, &now);
         env.storage().instance().set(&DataKey::Duration, &duration_seconds);
         env.storage().instance().set(&DataKey::MinIncrementBps, &min_increment_bps);
         env.storage().instance().set(&DataKey::ExtensionWindow, &extension_window_seconds);
