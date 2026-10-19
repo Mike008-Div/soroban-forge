@@ -53,12 +53,6 @@ impl EnglishAuctionContract {
     /// * `min_increment_bps` — minimum bid increment in basis points
     /// * `extension_window_seconds` — anti-sniping window; bids within this
     ///   window of the end extend the auction by `extension_window_seconds`
-    /// * `seller` â€” address selling the asset
-    /// * `asset_token` â€” contract address of the SEP-41 token being sold
-    /// * `payment_token` â€” contract address of the SEP-41 token used for bidding
-    /// * `asset_amount` â€” quantity of asset tokens offered for sale
-    /// * `reserve_price` â€” minimum starting bid in payment tokens
-    /// * `duration_seconds` â€” duration of the auction in seconds
     pub fn initialize(
         env: Env,
         seller: Address,
@@ -87,7 +81,6 @@ impl EnglishAuctionContract {
             panic!("min increment bps too large");
         }
 
-        let now = env.ledger().timestamp();
         env.storage().instance().set(&DataKey::Seller, &seller);
         env.storage().instance().set(&DataKey::AssetToken, &asset_token);
         env.storage().instance().set(&DataKey::PaymentToken, &payment_token);
@@ -115,6 +108,11 @@ impl EnglishAuctionContract {
             &env.current_contract_address(),
             &asset_amount,
         );
+        // The bidding clock starts when the auction opens, not at initialize,
+        // so a seller who funds late still gets the full duration (#577).
+        env.storage()
+            .instance()
+            .set(&DataKey::StartTime, &env.ledger().timestamp());
         env.storage()
             .instance()
             .set(&DataKey::State, &AuctionState::Open);
