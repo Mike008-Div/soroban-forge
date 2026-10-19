@@ -81,13 +81,11 @@ impl EnglishAuctionContract {
             panic!("min increment bps too large");
         }
 
-        let now = env.ledger().timestamp();
         env.storage().instance().set(&DataKey::Seller, &seller);
         env.storage().instance().set(&DataKey::AssetToken, &asset_token);
         env.storage().instance().set(&DataKey::PaymentToken, &payment_token);
         env.storage().instance().set(&DataKey::AssetAmount, &asset_amount);
         env.storage().instance().set(&DataKey::ReservePrice, &reserve_price);
-        env.storage().instance().set(&DataKey::StartTime, &now);
         env.storage().instance().set(&DataKey::Duration, &duration_seconds);
         env.storage().instance().set(&DataKey::MinIncrementBps, &min_increment_bps);
         env.storage().instance().set(&DataKey::ExtensionWindow, &extension_window_seconds);
@@ -110,6 +108,11 @@ impl EnglishAuctionContract {
             &env.current_contract_address(),
             &asset_amount,
         );
+        // The bidding clock starts when the auction opens, not at initialize,
+        // so a seller who funds late still gets the full duration (#577).
+        env.storage()
+            .instance()
+            .set(&DataKey::StartTime, &env.ledger().timestamp());
         env.storage()
             .instance()
             .set(&DataKey::State, &AuctionState::Open);

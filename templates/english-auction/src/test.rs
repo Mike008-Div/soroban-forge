@@ -279,3 +279,41 @@ fn test_refund_fails_does_not_block_new_bid() {
     // Bidder1 should have a refund available
     contract.withdraw_refund(&bidder1);
 }
+
+#[test]
+fn test_late_funding_keeps_the_full_bidding_window() {
+    // #577: the bidding clock starts in `fund`, so a seller who funds long
+    // after `initialize` still gets the whole `duration_seconds`.
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+
+    let asset_token = make_token(&env);
+    let payment_token = make_token(&env);
+    let seller = Address::generate(&env);
+    let bidder = Address::generate(&env);
+    let contract_id = env.register(EnglishAuctionContract, ());
+    let contract = EnglishAuctionContractClient::new(&env, &contract_id);
+
+    contract.initialize(
+        &seller,
+        &asset_token.address,
+        &payment_token.address,
+        &100,
+        &500,
+        &1_000,
+        &0,
+        &0,
+    );
+    asset_token.admin.mint(&seller, &100);
+    payment_token.admin.mint(&bidder, &10_000);
+
+    // Fund well after what would have been the end under the old behaviour.
+    env.ledger().with_mut(|li| li.timestamp = 5_000);
+    contract.fund();
+
+    // Near the end of the window that started at funding: still open.
+    env.ledger().with_mut(|li| li.timestamp = 5_900);
+    contract.place_bid(&bidder, &500);
+    assert_eq!(contract.get_highest_bid(), (Some(bidder), 500));
+}
