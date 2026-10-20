@@ -154,10 +154,51 @@ fn initialize_twice_fails_after_a_completed_draw_and_keeps_the_winner() {
     let winner = contract.draw();
 
     let attacker = Address::generate(&env);
-    let result = contract.try_initialize(&attacker, &(reveal_deadline + 100), &(reveal_deadline + 200));
-    assert!(result.is_err(), "a finished lottery must not be re-initializable");
+    let result = contract.try_initialize(
+        &attacker,
+        &(reveal_deadline + 100),
+        &(reveal_deadline + 200),
+    );
+    assert!(
+        result.is_err(),
+        "a finished lottery must not be re-initializable"
+    );
 
     // The draw outcome is untouched and cannot be re-run.
     assert_eq!(contract.get_winner(), winner);
     assert!(contract.try_draw().is_err());
+}
+
+#[test]
+fn last_revealer_can_withhold_nonce_and_alter_draw_eligibility() {
+    let env = Env::default();
+    let (contract, _admin, commit_deadline, reveal_deadline) = setup(&env);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+
+    let nonce_a = BytesN::from_array(&env, &[1_u8; 32]);
+    let nonce_b = BytesN::from_array(&env, &[2_u8; 32]);
+    let nonce_c = BytesN::from_array(&env, &[3_u8; 32]);
+
+    contract.enter(&alice, &commit(&env, &nonce_a));
+    contract.enter(&bob, &commit(&env, &nonce_b));
+    contract.enter(&carol, &commit(&env, &nonce_c));
+
+    // Move to reveal phase. Alice and Bob reveal.
+    env.ledger().with_mut(|li| li.timestamp = commit_deadline);
+    contract.reveal(&alice, &nonce_a);
+    contract.reveal(&bob, &nonce_b);
+
+    // Carol is the last revealer. Carol can observe Alice and Bob's reveals.
+    // Carol chooses NOT to reveal her nonce.
+    // When the reveal phase ends, draw proceeds without Carol.
+    env.ledger().with_mut(|li| li.timestamp = reveal_deadline);
+    let winner = contract.draw();
+
+    // The winner is selected only among entrants who revealed (Alice or Bob).
+    // Carol's missing reveal is not penalized with a loss of deposit, but Carol is excluded.
+    assert!(winner == alice || winner == bob);
+    assert_ne!(winner, carol);
 }
