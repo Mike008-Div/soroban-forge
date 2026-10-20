@@ -17,8 +17,9 @@ different administrator without touching the entrypoints it guards.
   default; hand any role to a different administrator with `set_role_admin`
 - `renounce_role` — give up one of your own roles; cannot touch anyone else's
 - `role_member_count` — how many addresses hold a role
-- `mint` / `burn` — two demo entrypoints, gated on `MINTER_ROLE` and
-  `BURNER_ROLE`, over a small internal ledger
+- `mint` — a role-gated demo entrypoint for authorized minting
+- `burn` — ordinary owner-authorized burn of the caller's own balance
+- `force_burn` — privileged admin/burner override for burning any balance
 
 ## Develop
 
@@ -131,11 +132,16 @@ pub fn pause(env: Env, caller: Address) {
 
 ## Replacing the demo ledger
 
-`mint`, `burn`, `balance` and `total_supply` exist only to give
+`mint`, `burn`, `force_burn`, `balance` and `total_supply` exist only to give
 `MINTER_ROLE` and `BURNER_ROLE` something real to protect. Delete them, along
 with `DataKey::Balance` / `DataKey::TotalSupply`, `Error::InvalidAmount`,
 `Error::InsufficientBalance`, the `Mint` / `Burn` events and the read/write
 balance helpers. Everything above them is the reusable part.
+
+`burn` is the ordinary, consented path: the holder authorizes the burn on their
+own balance. `force_burn` is the regulated override: holders of
+`BURNER_ROLE` can still burn any account’s balance when the admin-burn pattern
+is intentionally needed.
 
 ## Security
 
