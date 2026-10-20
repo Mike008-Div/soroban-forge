@@ -104,6 +104,9 @@ impl GovernanceContract {
         if quorum <= 0 {
             panic!("quorum must be positive");
         }
+        if voting_period == 0 {
+            panic!("voting period must be positive");
+        }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Quorum, &quorum);
         env.storage()
@@ -172,11 +175,7 @@ impl GovernanceContract {
             panic!("only members can create proposals");
         }
 
-        let id: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::NextId)
-            .unwrap_or(0);
+        let id: u64 = env.storage().instance().get(&DataKey::NextId).unwrap_or(0);
         let voting_period: u32 = env
             .storage()
             .instance()
@@ -199,9 +198,7 @@ impl GovernanceContract {
         env.storage()
             .persistent()
             .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
-        env.storage()
-            .instance()
-            .set(&DataKey::NextId, &(id + 1));
+        env.storage().instance().set(&DataKey::NextId, &(id + 1));
         id
     }
 
@@ -274,11 +271,7 @@ impl GovernanceContract {
             panic!("proposal already executed");
         }
 
-        let quorum: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::Quorum)
-            .unwrap_or(1);
+        let quorum: i128 = env.storage().instance().get(&DataKey::Quorum).unwrap_or(1);
         let total = proposal.votes_for + proposal.votes_against;
         if total < quorum {
             panic!("quorum not reached");
