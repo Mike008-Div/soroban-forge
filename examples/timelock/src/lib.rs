@@ -42,13 +42,23 @@ pub enum OperationStatus {
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
+pub struct OperationCall {
+    pub target: Address,
+    pub function_name: Symbol,
+    pub args: Vec<Val>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Operation {
     pub target: Address,
     pub function_name: Symbol,
     pub args: Vec<Val>,
+    pub calls: Vec<OperationCall>,
     pub ready_at: u64,
     pub executed: bool,
     pub cancelled: bool,
+    pub predecessor: Option<BytesN<32>>,
 }
 
 #[contracttype]
@@ -182,6 +192,30 @@ impl TimelockContract {
         env.crypto().sha256(&bytes).into()
     }
 
+    /// Compute the unique ID hash for a batch of calls.
+    pub fn hash_batch(
+        env: Env,
+        calls: Vec<OperationCall>,
+        predecessor: Option<BytesN<32>>,
+        salt: BytesN<32>,
+    ) -> BytesN<32> {
+        let mut bytes = Bytes::new(&env);
+        bytes.append(&calls.to_xdr(&env));
+
+        match predecessor {
+            Some(pred) => {
+                bytes.append(&1u32.to_xdr(&env));
+                bytes.append(&pred.to_xdr(&env));
+            }
+            None => {
+                bytes.append(&0u32.to_xdr(&env));
+            }
+        }
+
+        bytes.append(&salt.to_xdr(&env));
+        env.crypto().sha256(&bytes).into()
+    }
+
     /// Return the current lifecycle state of an operation.
     pub fn get_operation_state(env: Env, id: BytesN<32>) -> OperationStatus {
         let op: Option<Operation> = env.storage().persistent().get(&DataKey::Op(id));
@@ -236,7 +270,7 @@ impl TimelockContract {
             target.clone(),
             function_name.clone(),
             args.clone(),
-            salt,
+            salt.clone(),
         );
 
         if env.storage().persistent().has(&DataKey::Op(id.clone())) {
@@ -248,14 +282,22 @@ impl TimelockContract {
 
         let current_ts = env.ledger().timestamp();
         let ready_at = current_ts.checked_add(delay).expect("overflow");
+        let mut single_call_batch = Vec::new(&env);
+        single_call_batch.push_back(OperationCall {
+            target: target.clone(),
+            function_name: function_name.clone(),
+            args: args.clone(),
+        });
 
         let operation = Operation {
             target: target.clone(),
             function_name,
             args,
+            calls: single_call_batch,
             ready_at,
             executed: false,
             cancelled: false,
+            predecessor: None,
         };
 
         env.storage()
@@ -264,6 +306,65 @@ impl TimelockContract {
 
         env.events()
             .publish((symbol_short!("queue"), id.clone()), (ready_at, target));
+
+        Ok(id)
+    }
+
+    /// Queue several calls for delayed execution as a single atomic batch.
+    pub fn queue_batch(
+        env: Env,
+        caller: Address,
+        calls: Vec<OperationCall>,
+        delay: u64,
+        predecessor: Option<BytesN<32>>,
+        salt: BytesN<32>,
+    ) -> Result<BytesN<32>, TimelockError> {
+        caller.require_auth();
+
+        if !Self::has_role(env.clone(), Role::Proposer, caller.clone())
+            && !Self::has_role(env.clone(), Role::Admin, caller)
+        {
+            return Err(TimelockError::Unauthorized);
+        }
+
+        if calls.is_empty() {
+            return Err(TimelockError::NotQueued);
+        }
+
+        let min_delay = Self::get_min_delay(env.clone());
+        if delay < min_delay {
+            return Err(TimelockError::InvalidDelay);
+        }
+
+        let first = calls.iter().next().unwrap();
+        let id = Self::hash_batch(env.clone(), calls.clone(), predecessor.clone(), salt.clone());
+
+        if env.storage().persistent().has(&DataKey::Op(id.clone())) {
+            let state = Self::get_operation_state(env.clone(), id.clone());
+            if state != OperationStatus::Unset && state != OperationStatus::Cancelled {
+                return Err(TimelockError::AlreadyQueued);
+            }
+        }
+
+        let current_ts = env.ledger().timestamp();
+        let ready_at = current_ts.checked_add(delay).expect("overflow");
+        let operation = Operation {
+            target: first.target.clone(),
+            function_name: first.function_name.clone(),
+            args: first.args.clone(),
+            calls: calls.clone(),
+            ready_at,
+            executed: false,
+            cancelled: false,
+            predecessor: predecessor.clone(),
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Op(id.clone()), &operation);
+
+        env.events()
+            .publish((symbol_short!("queue"), id.clone()), (ready_at, first.target.clone()));
 
         Ok(id)
     }
@@ -313,6 +414,17 @@ impl TimelockContract {
             return Err(TimelockError::NotReady);
         }
 
+        if let Some(predecessor) = operation.predecessor.clone() {
+            let predecessor_op: Operation = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Op(predecessor))
+                .ok_or(TimelockError::NotQueued)?;
+            if predecessor_op.cancelled || !predecessor_op.executed {
+                return Err(TimelockError::NotReady);
+            }
+        }
+
         operation.executed = true;
         env.storage()
             .persistent()
@@ -323,6 +435,79 @@ impl TimelockContract {
 
         // Invoke the target contract call
         let result = env.invoke_contract::<Val>(&target, &function_name, args);
+        Ok(result)
+    }
+
+    /// Execute a ready queued batch of calls atomically (executor only).
+    pub fn execute_batch(
+        env: Env,
+        caller: Address,
+        calls: Vec<OperationCall>,
+        predecessor: Option<BytesN<32>>,
+        salt: BytesN<32>,
+    ) -> Result<Val, TimelockError> {
+        caller.require_auth();
+
+        if !Self::has_role(env.clone(), Role::Executor, caller.clone())
+            && !Self::has_role(env.clone(), Role::Admin, caller)
+        {
+            return Err(TimelockError::Unauthorized);
+        }
+
+        if calls.is_empty() {
+            return Err(TimelockError::NotQueued);
+        }
+
+        let id = Self::hash_batch(env.clone(), calls.clone(), predecessor.clone(), salt);
+
+        let mut operation: Operation = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Op(id.clone()))
+            .ok_or(TimelockError::NotQueued)?;
+
+        if operation.cancelled {
+            return Err(TimelockError::AlreadyCancelled);
+        }
+
+        if operation.executed {
+            return Err(TimelockError::AlreadyExecuted);
+        }
+
+        if env.ledger().timestamp() < operation.ready_at {
+            return Err(TimelockError::NotReady);
+        }
+
+        if let Some(predecessor_id) = predecessor.clone() {
+            let predecessor_op: Operation = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Op(predecessor_id))
+                .ok_or(TimelockError::NotQueued)?;
+            if predecessor_op.cancelled || !predecessor_op.executed {
+                return Err(TimelockError::NotReady);
+            }
+        }
+
+        operation.executed = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Op(id.clone()), &operation);
+
+        env.events().publish((symbol_short!("exec"), id), calls.clone());
+
+        let mut iter = calls.iter();
+        let first_call = iter.next().unwrap();
+        let mut result = env.invoke_contract::<Val>(
+            &first_call.target,
+            &first_call.function_name,
+            first_call.args.clone(),
+        );
+
+        for call in iter {
+            result = env.invoke_contract::<Val>(&call.target, &call.function_name, call.args.clone());
+        }
+
         Ok(result)
     }
 
