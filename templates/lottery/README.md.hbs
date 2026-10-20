@@ -71,6 +71,13 @@ stellar contract invoke \
   -- draw
 ```
 
-## Security
+## Security & Limitations
 
-This template is a starting point, not audited code. See [security-considerations.md](https://github.com/soroban-forge-labs/soroban-forge/blob/main/docs/security-considerations.md) for what it does and does not protect against.
+### Last-revealer advantage
+
+This template implements a plain commit-reveal scheme. It has an inherent limitation: **the last entrant to reveal can precompute the seed with and without their nonce**. If withholding their reveal yields a winning outcome for them (or an accomplice), they can simply choose not to reveal. Because entrants who do not reveal are excluded from the draw without penalty, the last revealer can steer or bias the outcome.
+
+**When not to use this template:**
+Do not use this plain commit-reveal template for production lotteries, high-value raffles, or games where participants have a financial incentive to withhold their reveal. For high-stakes applications on Stellar/Soroban, use a Verifiable Random Function (VRF) or an external oracle that provides unbiasable randomness.
+
+See [security-considerations.md](https://github.com/soroban-forge-labs/soroban-forge/blob/main/docs/security-considerations.md) for what it does and does not protect against.
