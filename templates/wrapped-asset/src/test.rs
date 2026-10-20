@@ -25,9 +25,8 @@ fn setup(env: &Env) -> (WrappedAssetContractClient<'_>, Tok<'_>) {
     env.mock_all_auths();
 
     let token = make_token(env);
-    let contract_id = env.register(WrappedAssetContract, ());
+    let contract_id = env.register(WrappedAssetContract, (token.address.clone(),));
     let contract = WrappedAssetContractClient::new(env, &contract_id);
-    contract.initialize(&token.address);
 
     (contract, token)
 }
@@ -126,6 +125,15 @@ fn initialize_twice_panics() {
 }
 
 #[test]
+#[should_panic(expected = "already initialized")]
+fn initialize_with_different_token_fails_after_setup() {
+    let env = Env::default();
+    let (contract, _token) = setup(&env);
+    let other_token = make_token(&env);
+    contract.initialize(&other_token.address);
+}
+
+#[test]
 fn sep41_transfer_and_allowance_work_on_wrapped_balance() {
     let env = Env::default();
     let (contract, token) = setup(&env);
@@ -156,4 +164,3 @@ fn sep41_transfer_and_allowance_work_on_wrapped_balance() {
     assert_eq!(contract.balance(&bob), 0);
     assert_eq!(token.client.balance(&bob), 300);
 }
-
