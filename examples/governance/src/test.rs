@@ -186,3 +186,21 @@ fn zero_quorum_is_rejected() {
     let client = GovernanceContractClient::new(&env, &env.register(GovernanceContract, ()));
     client.initialize(&Address::generate(&env), &0, &100);
 }
+
+#[test]
+#[should_panic(expected = "quorum must be positive")]
+fn negative_quorum_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = GovernanceContractClient::new(&env, &env.register(GovernanceContract, ()));
+    client.initialize(&Address::generate(&env), &-1, &100);
+}
+
+#[test]
+#[should_panic(expected = "voting period must be positive")]
+fn zero_voting_period_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = GovernanceContractClient::new(&env, &env.register(GovernanceContract, ()));
+    client.initialize(&Address::generate(&env), &3, &0);
+}
