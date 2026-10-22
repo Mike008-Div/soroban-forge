@@ -110,7 +110,9 @@ fn write_allowance(
     );
     if amount > 0 {
         let live_for = expiration_ledger - env.ledger().sequence();
-        env.storage().temporary().extend_ttl(&key, live_for, live_for);
+        env.storage()
+            .temporary()
+            .extend_ttl(&key, live_for, live_for);
     }
 }
 
@@ -135,12 +137,19 @@ pub struct WrappedAssetContract;
 
 #[contractimpl]
 impl WrappedAssetContract {
+    /// Deploy-time setup for the underlying SEP-41 token.
+    pub fn __constructor(env: Env, underlying: Address) {
+        Self::initialize(env, underlying);
+    }
+
     /// Initialize the wrapper for a given underlying SEP-41 token.
     pub fn initialize(env: Env, underlying: Address) {
         if env.storage().instance().has(&DataKey::Underlying) {
             panic!("already initialized");
         }
-        env.storage().instance().set(&DataKey::Underlying, &underlying);
+        env.storage()
+            .instance()
+            .set(&DataKey::Underlying, &underlying);
         env.storage().instance().set(&DataKey::TotalSupply, &0_i128);
     }
 
