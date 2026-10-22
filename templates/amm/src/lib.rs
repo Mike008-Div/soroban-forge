@@ -160,6 +160,36 @@ fn sqrt(value: i128) -> i128 {
     x
 }
 
+/// Calculate the input amount required to obtain exactly `out` units of output.
+/// This is the core pricing formula used by swaps, accounting for the 0.3% fee.
+/// Returns None if reserves are insufficient or calculation would overflow.
+fn quote_amount_in(reserve_in: i128, reserve_out: i128, out: i128) -> Option<i128> {
+    if out <= 0 || out >= reserve_out || reserve_in == 0 {
+        return None;
+    }
+    // in = reserve_in * out * FEE_DEN / ((reserve_out - out) * FEE_NUM) + 1
+    let numerator = reserve_in.checked_mul(out)?.checked_mul(FEE_DEN)?;
+    let denominator = (reserve_out - out).checked_mul(FEE_NUM)?;
+    let in_amount = (numerator / denominator).checked_add(1)?;
+    Some(in_amount)
+}
+
+/// Calculate the output amount received from exactly `in_amount` units of input.
+/// This is the inverse pricing formula, accounting for the 0.3% fee.
+/// Returns None if reserves are insufficient or calculation would overflow.
+fn quote_amount_out(reserve_in: i128, reserve_out: i128, in_amount: i128) -> Option<i128> {
+    if in_amount <= 0 || reserve_in == 0 || reserve_out == 0 {
+        return None;
+    }
+    // out = (reserve_out * in_amount * FEE_NUM) / (reserve_in * FEE_DEN + in_amount * FEE_NUM)
+    let numerator = reserve_out.checked_mul(in_amount)?.checked_mul(FEE_NUM)?;
+    let denominator = reserve_in
+        .checked_mul(FEE_DEN)?
+        .checked_add(in_amount.checked_mul(FEE_NUM)?)?;
+    let out = numerator / denominator;
+    Some(out)
+}
+
 #[contract]
 pub struct LiquidityPool;
 
@@ -301,17 +331,10 @@ impl LiquidityPool {
         } else {
             (reserve_a, reserve_b)
         };
-        if out >= reserve_out || reserve_in == 0 {
-            panic_with_error!(&env, Error::InsufficientLiquidity);
-        }
 
-        // Constant-product with a 0.3% fee on the input. Solve for the minimum
-        // input that keeps `k` non-decreasing, then round up by one unit:
-        //   in = reserve_in * out * FEE_DEN
-        //        / ((reserve_out - out) * FEE_NUM)  + 1
-        let numerator = checked_mul(&env, checked_mul(&env, reserve_in, out), FEE_DEN);
-        let denominator = checked_mul(&env, reserve_out - out, FEE_NUM);
-        let in_amount = checked_add(&env, numerator / denominator, 1);
+        // Use the quote function to calculate required input.
+        let in_amount = quote_amount_in(reserve_in, reserve_out, out)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InsufficientLiquidity));
         if in_amount > in_max {
             panic_with_error!(&env, Error::SlippageExceeded);
         }
@@ -404,6 +427,56 @@ impl LiquidityPool {
     /// The two reserve token addresses, `(token_a, token_b)`.
     pub fn tokens(env: Env) -> (Address, Address) {
         (get_token_a(&env), get_token_b(&env))
+    }
+
+    /// Calculate the input amount required to obtain exactly `out` units of
+    /// output, given the current reserves. When `buy_a` is true, this is the
+    /// amount of token B required to buy `out` units of token A; otherwise
+    /// it's the amount of token A required to buy `out` units of token B.
+    /// Returns the required input amount, including the 0.3% fee.
+    ///
+    /// # Errors
+    /// Panics with `InsufficientLiquidity` if the output exceeds available
+    /// reserve or if reserves are zero.
+    pub fn get_amount_in(env: Env, buy_a: bool, out: i128) -> i128 {
+        let reserve_a = get_reserve_a(&env);
+        let reserve_b = get_reserve_b(&env);
+
+        let (reserve_in, reserve_out) = if buy_a {
+            (reserve_b, reserve_a)
+        } else {
+            (reserve_a, reserve_b)
+        };
+
+        quote_amount_in(reserve_in, reserve_out, out)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InsufficientLiquidity))
+    }
+
+    /// Calculate the output amount received from exactly `in_amount` units of
+    /// input, given the current reserves. When `buy_a` is true, this is the
+    /// amount of token A obtained by selling `in_amount` units of token B;
+    /// otherwise it's the amount of token B obtained by selling `in_amount`
+    /// units of token A. The result accounts for the 0.3% fee.
+    ///
+    /// # Errors
+    /// Panics with `InvalidAmount` if input is invalid, or `InsufficientLiquidity`
+    /// if reserves are zero.
+    pub fn get_amount_out(env: Env, buy_a: bool, in_amount: i128) -> i128 {
+        if in_amount <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
+        }
+
+        let reserve_a = get_reserve_a(&env);
+        let reserve_b = get_reserve_b(&env);
+
+        let (reserve_in, reserve_out) = if buy_a {
+            (reserve_b, reserve_a)
+        } else {
+            (reserve_a, reserve_b)
+        };
+
+        quote_amount_out(reserve_in, reserve_out, in_amount)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InsufficientLiquidity))
     }
 }
 
