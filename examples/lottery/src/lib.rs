@@ -1,7 +1,7 @@
 //! Lottery / raffle using a commit-reveal scheme for randomness.
 //!
 //! * **Enter** — during the commit phase, entrants submit a commitment
-//!   (`sha256(nonce)`) that hides a secret nonce they will reveal later.
+//!   (`sha256(entrant_xdr || nonce)`) that hides a secret nonce they will reveal later.
 //! * **Reveal** — during the reveal phase, entrants reveal their nonce; the
 //!   contract checks it hashes to their commitment.
 //! * **Draw** — after the reveal phase ends, anyone can call `draw`, which
@@ -23,6 +23,7 @@ pub enum DataKey {
     RevealDeadline,
     Entrants,
     Commitment(Address),
+    CommitmentUsed(BytesN<32>),
     Revealed(Address),
     Winner,
     Drawn,
@@ -65,9 +66,18 @@ impl LotteryContract {
         env.storage().instance().set(&DataKey::Drawn, &false);
     }
 
+    /// Compute the commitment for an entrant and nonce: `sha256(entrant_xdr || nonce)`.
+    pub fn commitment(env: Env, entrant: Address, nonce: BytesN<32>) -> BytesN<32> {
+        let mut buf = Bytes::new(&env);
+        buf.append(&entrant.to_xdr(&env));
+        let nonce_bytes: Bytes = nonce.into();
+        buf.append(&nonce_bytes);
+        env.crypto().sha256(&buf).into()
+    }
+
     /// Enter the lottery with a commitment to a secret nonce.
     ///
-    /// `commitment` must equal `sha256(nonce)` for the nonce that will be
+    /// `commitment` must equal `sha256(entrant_xdr || nonce)` for the nonce that will be
     /// passed to `reveal` later. Must be called before the commit deadline.
     pub fn enter(env: Env, entrant: Address, commitment: BytesN<32>) {
         entrant.require_auth();
@@ -86,13 +96,15 @@ impl LotteryContract {
         if env.storage().instance().has(&key) {
             panic!("already entered");
         }
+
+        let comm_used_key = DataKey::CommitmentUsed(commitment.clone());
+        if env.storage().instance().has(&comm_used_key) {
+            panic!("duplicate commitment");
+        }
+        env.storage().instance().set(&comm_used_key, &true);
         env.storage().instance().set(&key, &commitment);
 
-        let mut entrants: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Entrants)
-            .unwrap();
+        let mut entrants: Vec<Address> = env.storage().instance().get(&DataKey::Entrants).unwrap();
         entrants.push_back(entrant);
         env.storage().instance().set(&DataKey::Entrants, &entrants);
     }
@@ -131,8 +143,11 @@ impl LotteryContract {
             panic!("already revealed");
         }
 
+        let mut buf = Bytes::new(&env);
+        buf.append(&entrant.to_xdr(&env));
         let nonce_bytes: Bytes = nonce.clone().into();
-        let computed = env.crypto().sha256(&nonce_bytes).to_bytes();
+        buf.append(&nonce_bytes);
+        let computed: BytesN<32> = env.crypto().sha256(&buf).into();
         if computed != commitment {
             panic!("nonce does not match commitment");
         }

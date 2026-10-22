@@ -4,9 +4,12 @@ use super::*;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{testutils::Ledger, Address, Bytes, BytesN, Env};
 
-fn commit(env: &Env, nonce: &BytesN<32>) -> BytesN<32> {
+fn commit(env: &Env, entrant: &Address, nonce: &BytesN<32>) -> BytesN<32> {
+    let mut buf = Bytes::new(env);
+    buf.append(&entrant.to_xdr(env));
     let bytes: Bytes = nonce.clone().into();
-    env.crypto().sha256(&bytes).to_bytes()
+    buf.append(&bytes);
+    env.crypto().sha256(&buf).into()
 }
 
 fn setup(env: &Env) -> (LotteryContractClient<'_>, Address, u64, u64) {
@@ -39,9 +42,9 @@ fn entry_reveal_and_draw_picks_a_revealed_winner() {
     let nonce_b = BytesN::from_array(&env, &[2_u8; 32]);
     let nonce_c = BytesN::from_array(&env, &[3_u8; 32]);
 
-    contract.enter(&alice, &commit(&env, &nonce_a));
-    contract.enter(&bob, &commit(&env, &nonce_b));
-    contract.enter(&carol, &commit(&env, &nonce_c));
+    contract.enter(&alice, &commit(&env, &alice, &nonce_a));
+    contract.enter(&bob, &commit(&env, &bob, &nonce_b));
+    contract.enter(&carol, &commit(&env, &carol, &nonce_c));
 
     // Move into the reveal window.
     env.ledger().with_mut(|li| li.timestamp = commit_deadline);
@@ -68,8 +71,8 @@ fn non_revealed_entrants_are_excluded_from_the_draw() {
     let nonce_a = BytesN::from_array(&env, &[1_u8; 32]);
     let nonce_b = BytesN::from_array(&env, &[2_u8; 32]);
 
-    contract.enter(&alice, &commit(&env, &nonce_a));
-    contract.enter(&bob, &commit(&env, &nonce_b));
+    contract.enter(&alice, &commit(&env, &alice, &nonce_a));
+    contract.enter(&bob, &commit(&env, &bob, &nonce_b));
 
     env.ledger().with_mut(|li| li.timestamp = commit_deadline);
     // Only alice reveals; bob forfeits.
@@ -91,10 +94,47 @@ fn reveal_with_wrong_nonce_fails() {
     let nonce_a = BytesN::from_array(&env, &[1_u8; 32]);
     let wrong_nonce = BytesN::from_array(&env, &[9_u8; 32]);
 
-    contract.enter(&alice, &commit(&env, &nonce_a));
+    contract.enter(&alice, &commit(&env, &alice, &nonce_a));
 
     env.ledger().with_mut(|li| li.timestamp = commit_deadline);
     contract.reveal(&alice, &wrong_nonce);
+}
+
+#[test]
+#[should_panic(expected = "duplicate commitment")]
+fn duplicate_commitments_are_rejected_at_enter() {
+    let env = Env::default();
+    let (contract, _admin, _commit_deadline, _reveal_deadline) = setup(&env);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let nonce = BytesN::from_array(&env, &[1_u8; 32]);
+    let commitment = commit(&env, &alice, &nonce);
+
+    contract.enter(&alice, &commitment);
+    contract.enter(&bob, &commitment);
+}
+
+#[test]
+#[should_panic(expected = "nonce does not match commitment")]
+fn copied_commitment_cannot_be_revealed_by_different_entrant() {
+    let env = Env::default();
+    let (contract, _admin, commit_deadline, _reveal_deadline) = setup(&env);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let nonce = BytesN::from_array(&env, &[1_u8; 32]);
+
+    let comm_alice = commit(&env, &alice, &nonce);
+    let nonce_bob_fake = BytesN::from_array(&env, &[2_u8; 32]);
+    let comm_bob = commit(&env, &bob, &nonce_bob_fake);
+
+    contract.enter(&alice, &comm_alice);
+    contract.enter(&bob, &comm_bob);
+
+    env.ledger().with_mut(|li| li.timestamp = commit_deadline);
+    // Bob attempts to reveal Alice's nonce for his own entry
+    contract.reveal(&bob, &nonce);
 }
 
 #[test]
@@ -105,7 +145,7 @@ fn draw_without_reveals_fails() {
 
     let alice = Address::generate(&env);
     let nonce_a = BytesN::from_array(&env, &[1_u8; 32]);
-    contract.enter(&alice, &commit(&env, &nonce_a));
+    contract.enter(&alice, &commit(&env, &alice, &nonce_a));
 
     let _ = commit_deadline;
     env.ledger().with_mut(|li| li.timestamp = reveal_deadline);
@@ -122,7 +162,7 @@ fn enter_after_commit_deadline_fails() {
     let nonce_a = BytesN::from_array(&env, &[1_u8; 32]);
 
     env.ledger().with_mut(|li| li.timestamp = commit_deadline);
-    contract.enter(&alice, &commit(&env, &nonce_a));
+    contract.enter(&alice, &commit(&env, &alice, &nonce_a));
 }
 
 #[test]
@@ -133,7 +173,7 @@ fn initialize_twice_fails_after_a_commit() {
 
     let alice = Address::generate(&env);
     let nonce_a = BytesN::from_array(&env, &[1_u8; 32]);
-    contract.enter(&alice, &commit(&env, &nonce_a));
+    contract.enter(&alice, &commit(&env, &alice, &nonce_a));
 
     // An attacker tries to take over and reset the running lottery.
     let attacker = Address::generate(&env);
@@ -147,15 +187,22 @@ fn initialize_twice_fails_after_a_completed_draw_and_keeps_the_winner() {
 
     let alice = Address::generate(&env);
     let nonce_a = BytesN::from_array(&env, &[1_u8; 32]);
-    contract.enter(&alice, &commit(&env, &nonce_a));
+    contract.enter(&alice, &commit(&env, &alice, &nonce_a));
     env.ledger().with_mut(|li| li.timestamp = commit_deadline);
     contract.reveal(&alice, &nonce_a);
     env.ledger().with_mut(|li| li.timestamp = reveal_deadline);
     let winner = contract.draw();
 
     let attacker = Address::generate(&env);
-    let result = contract.try_initialize(&attacker, &(reveal_deadline + 100), &(reveal_deadline + 200));
-    assert!(result.is_err(), "a finished lottery must not be re-initializable");
+    let result = contract.try_initialize(
+        &attacker,
+        &(reveal_deadline + 100),
+        &(reveal_deadline + 200),
+    );
+    assert!(
+        result.is_err(),
+        "a finished lottery must not be re-initializable"
+    );
 
     // The draw outcome is untouched and cannot be re-run.
     assert_eq!(contract.get_winner(), winner);
