@@ -5,7 +5,7 @@ All notable changes to Soroban Forge will be documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
-
+- Fix `deploy` and `invoke` rejecting soroban-forge-only identities as `--source`; the key is now passed to stellar-cli via `STELLAR_ACCOUNT`, never argv (#614)
 ### Added
 
 - `prediction-market` template: the constructor takes a resolution `deadline`
