@@ -12,7 +12,7 @@
 //! Feature modules (scaffold, testgen, ci-presets, doctor) depend on this
 //! crate and implement [`ForgePlugin`]; the `soroban-forge` binary wires them
 //! together and calls [`run`].
-
+pub mod source;
 pub mod atomic;
 pub mod cli;
 pub mod config;
