@@ -46,19 +46,6 @@ jobs:
       # ci-init-step: release/build-and-release/build-contract
       - name: Build contract (wasm)
         run: cargo build --target wasm32v1-none --release --locked
-      # ci-init-step: release/build-and-release/checksum
-      - name: Checksum
-        run: |
-          cd target/wasm32v1-none/release
-          sha256sum {{crate_name}}.wasm > {{crate_name}}.wasm.sha256
-      # ci-init-step: release/build-and-release/sign-release-artifacts
-      - name: Sign release artifacts
-        run: |
-          openssl genrsa -out /tmp/release-signing.key 4096
-          openssl rsa -in /tmp/release-signing.key -pubout -out /tmp/release-signing.pub
-          cd target/wasm32v1-none/release
-          openssl dgst -sha256 -sign /tmp/release-signing.key -out {{crate_name}}.wasm.sig {{crate_name}}.wasm
-          openssl dgst -sha256 -sign /tmp/release-signing.key -out {{crate_name}}.wasm.sha256.sig {{crate_name}}.wasm.sha256
       # ci-init-step: release/build-and-release/verify-reproducible-build
       - name: Verify reproducible build
         # Clean and rebuild from the same commit; the wasm hash must match.
@@ -91,6 +78,23 @@ jobs:
             echo "::error::Docker rebuild hash differs from the host build"
             exit 1
           fi
+      # Checksums and signatures are produced only after the reproducibility
+      # checks, because those checks run `cargo clean` (locally and in the
+      # pinned container), which deletes `target/` — and with it any files
+      # written there earlier.
+      # ci-init-step: release/build-and-release/checksum
+      - name: Checksum
+        run: |
+          cd target/wasm32v1-none/release
+          sha256sum {{crate_name}}.wasm > {{crate_name}}.wasm.sha256
+      # ci-init-step: release/build-and-release/sign-release-artifacts
+      - name: Sign release artifacts
+        run: |
+          openssl genrsa -out /tmp/release-signing.key 4096
+          openssl rsa -in /tmp/release-signing.key -pubout -out /tmp/release-signing.pub
+          cd target/wasm32v1-none/release
+          openssl dgst -sha256 -sign /tmp/release-signing.key -out {{crate_name}}.wasm.sig {{crate_name}}.wasm
+          openssl dgst -sha256 -sign /tmp/release-signing.key -out {{crate_name}}.wasm.sha256.sig {{crate_name}}.wasm.sha256
       # ci-init-step: release/build-and-release/create-release
       - name: Create release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
@@ -101,4 +105,5 @@ jobs:
             target/wasm32v1-none/release/{{crate_name}}.wasm.sha256
             target/wasm32v1-none/release/{{crate_name}}.wasm.sig
             target/wasm32v1-none/release/{{crate_name}}.wasm.sha256.sig
+          fail_on_unmatched_files: true
           generate_release_notes: true
