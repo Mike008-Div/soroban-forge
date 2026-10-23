@@ -3,12 +3,49 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{
+    contract, contractimpl, symbol_short, vec,
+    testutils::{Address as _, Ledger},
+    Address, Env, IntoVal, Symbol,
+};
+
+#[contract]
+pub struct MockTargetContract;
+
+#[contractimpl]
+impl MockTargetContract {
+    pub fn record(env: Env, value: u32) {
+        let calls: u32 = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("calls"))
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("calls"), &(calls + 1));
+        env.storage().instance().set(&symbol_short!("value"), &value);
+    }
+
+    pub fn get_calls(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("calls"))
+            .unwrap_or(0)
+    }
+
+    pub fn get_value(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("value"))
+            .unwrap_or(0)
+    }
+}
 
 struct Dao<'a> {
     env: Env,
     client: GovernanceContractClient<'a>,
+    target_id: Address,
+    target: MockTargetContractClient<'a>,
 }
 
 /// A DAO with quorum 3, a 100-ledger voting period and `members` registered.
@@ -17,6 +54,8 @@ fn setup<'a>(members: usize) -> (Dao<'a>, std::vec::Vec<Address>) {
     env.mock_all_auths();
     let contract_id = env.register(GovernanceContract, ());
     let client = GovernanceContractClient::new(&env, &contract_id);
+    let target_id = env.register(MockTargetContract, ());
+    let target = MockTargetContractClient::new(&env, &target_id);
     let admin = Address::generate(&env);
     client.initialize(&admin, &3, &100);
 
@@ -26,7 +65,21 @@ fn setup<'a>(members: usize) -> (Dao<'a>, std::vec::Vec<Address>) {
         client.add_member(&member);
         addrs.push(member);
     }
-    (Dao { env, client }, addrs)
+    (Dao {
+        env,
+        client,
+        target_id,
+        target,
+    }, addrs)
+}
+
+fn create_proposal(dao: &Dao, proposer: &Address) -> u64 {
+    dao.client.create_proposal(
+        proposer,
+        &dao.target_id,
+        &Symbol::new(&dao.env, "record"),
+        &vec![&dao.env, 42_u32.into_val(&dao.env)],
+    )
 }
 
 fn end_voting(env: &Env) {
@@ -36,7 +89,7 @@ fn end_voting(env: &Env) {
 #[test]
 fn create_and_vote_and_execute() {
     let (dao, m) = setup(4);
-    let pid = dao.client.create_proposal(&m[0]);
+    let pid = create_proposal(&dao, &m[0]);
     dao.client.cast_vote(&m[0], &pid, &true);
     dao.client.cast_vote(&m[1], &pid, &true);
     dao.client.cast_vote(&m[2], &pid, &false);
@@ -48,12 +101,31 @@ fn create_and_vote_and_execute() {
     assert!(proposal.executed);
     assert_eq!(proposal.votes_for, 2);
     assert_eq!(proposal.votes_against, 1);
+    assert_eq!(dao.target.get_calls(), 1);
+    assert_eq!(dao.target.get_value(), 42);
+}
+
+#[test]
+fn passed_proposal_invokes_target_once() {
+    let (dao, members) = setup(3);
+    let proposal_id = create_proposal(&dao, &members[0]);
+    for member in &members {
+        dao.client.cast_vote(member, &proposal_id, &true);
+    }
+
+    end_voting(&dao.env);
+    dao.client.execute_proposal(&proposal_id);
+
+    assert_eq!(dao.target.get_calls(), 1);
+    assert_eq!(dao.target.get_value(), 42);
+    assert!(dao.client.try_execute_proposal(&proposal_id).is_err());
+    assert_eq!(dao.target.get_calls(), 1);
 }
 
 #[test]
 fn every_vote_counts_exactly_one() {
     let (dao, m) = setup(3);
-    let pid = dao.client.create_proposal(&m[0]);
+    let pid = create_proposal(&dao, &m[0]);
     for member in &m {
         dao.client.cast_vote(member, &pid, &true);
     }
@@ -65,7 +137,7 @@ fn a_single_voter_cannot_outvote_everyone_else() {
     // The attacker is a member and votes first; four others vote against.
     let (dao, m) = setup(5);
     let attacker = &m[0];
-    let pid = dao.client.create_proposal(attacker);
+    let pid = create_proposal(&dao, attacker);
 
     dao.client.cast_vote(attacker, &pid, &true);
     for member in &m[1..] {
@@ -90,7 +162,7 @@ fn a_lone_voter_cannot_pass_a_proposal_below_quorum() {
     // Previously one caller could pass `weight = i128::MAX`; now a single
     // vote is always 1, which can never satisfy a quorum of 3.
     let (dao, m) = setup(5);
-    let pid = dao.client.create_proposal(&m[0]);
+    let pid = create_proposal(&dao, &m[0]);
     dao.client.cast_vote(&m[0], &pid, &true);
 
     end_voting(&dao.env);
@@ -102,7 +174,7 @@ fn a_lone_voter_cannot_pass_a_proposal_below_quorum() {
 #[should_panic(expected = "not eligible to vote")]
 fn non_members_cannot_vote() {
     let (dao, m) = setup(2);
-    let pid = dao.client.create_proposal(&m[0]);
+    let pid = create_proposal(&dao, &m[0]);
     let outsider = Address::generate(&dao.env);
     dao.client.cast_vote(&outsider, &pid, &true);
 }
@@ -111,7 +183,7 @@ fn non_members_cannot_vote() {
 fn many_fresh_addresses_cannot_flood_a_vote() {
     // Sybil attempt: generating new addresses gives them no voting power.
     let (dao, m) = setup(3);
-    let pid = dao.client.create_proposal(&m[0]);
+    let pid = create_proposal(&dao, &m[0]);
     for _ in 0..10 {
         let sybil = Address::generate(&dao.env);
         assert!(dao.client.try_cast_vote(&sybil, &pid, &true).is_err());
@@ -124,7 +196,7 @@ fn members_added_after_a_proposal_cannot_vote_on_it() {
     // Membership is snapshotted at proposal creation, so the admin cannot
     // add friendly voters to swing an open proposal.
     let (dao, m) = setup(3);
-    let pid = dao.client.create_proposal(&m[0]);
+    let pid = create_proposal(&dao, &m[0]);
 
     dao.env.ledger().with_mut(|li| li.sequence_number += 1);
     let late = Address::generate(&dao.env);
@@ -133,7 +205,7 @@ fn members_added_after_a_proposal_cannot_vote_on_it() {
     assert!(dao.client.try_cast_vote(&late, &pid, &true).is_err());
 
     // They can vote on proposals created after they joined.
-    let next = dao.client.create_proposal(&m[0]);
+    let next = create_proposal(&dao, &m[0]);
     dao.client.cast_vote(&late, &next, &true);
     assert_eq!(dao.client.get_proposal(&next).votes_for, 1);
 }
@@ -141,7 +213,7 @@ fn members_added_after_a_proposal_cannot_vote_on_it() {
 #[test]
 fn removed_members_cannot_vote() {
     let (dao, m) = setup(3);
-    let pid = dao.client.create_proposal(&m[0]);
+    let pid = create_proposal(&dao, &m[0]);
     dao.client.remove_member(&m[2]);
 
     assert!(!dao.client.is_member(&m[2]));
@@ -154,14 +226,14 @@ fn removed_members_cannot_vote() {
 fn non_members_cannot_create_proposals() {
     let (dao, _m) = setup(1);
     let outsider = Address::generate(&dao.env);
-    dao.client.create_proposal(&outsider);
+    create_proposal(&dao, &outsider);
 }
 
 #[test]
 #[should_panic(expected = "already voted")]
 fn double_vote_is_rejected() {
     let (dao, m) = setup(3);
-    let pid = dao.client.create_proposal(&m[0]);
+    let pid = create_proposal(&dao, &m[0]);
     dao.client.cast_vote(&m[1], &pid, &true);
     dao.client.cast_vote(&m[1], &pid, &true); // should panic
 }
@@ -170,7 +242,7 @@ fn double_vote_is_rejected() {
 #[should_panic(expected = "quorum not reached")]
 fn execute_fails_below_quorum() {
     let (dao, m) = setup(3);
-    let pid = dao.client.create_proposal(&m[0]);
+    let pid = create_proposal(&dao, &m[0]);
     dao.client.cast_vote(&m[0], &pid, &true);
     dao.client.cast_vote(&m[1], &pid, &true); // quorum is 3
 

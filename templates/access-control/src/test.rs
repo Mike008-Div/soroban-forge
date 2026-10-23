@@ -209,7 +209,7 @@ fn role_gated_mint_succeeds_for_a_minter() {
 }
 
 #[test]
-fn role_gated_burn_succeeds_for_a_burner() {
+fn burn_only_debits_the_owner_balance() {
     let env = Env::default();
     let f = setup(&env);
 
@@ -217,10 +217,27 @@ fn role_gated_burn_succeeds_for_a_burner() {
     f.client.grant_role(&f.admin, &BURNER_ROLE, &f.bob);
 
     f.client.mint(&f.alice, &f.bob, &1000);
-    f.client.burn(&f.bob, &f.bob, &400);
+    f.client.burn(&f.bob, &400);
 
     assert_eq!(f.client.balance(&f.bob), 600);
     assert_eq!(f.client.total_supply(), 600);
+}
+
+#[test]
+fn force_burn_allows_an_admin_burner_to_debit_any_balance() {
+    let env = Env::default();
+    let f = setup(&env);
+
+    f.client.grant_role(&f.admin, &MINTER_ROLE, &f.alice);
+    f.client.grant_role(&f.admin, &BURNER_ROLE, &f.bob);
+
+    f.client.mint(&f.alice, &f.alice, &1000);
+    f.client.mint(&f.alice, &f.bob, &1000);
+    f.client.force_burn(&f.bob, &f.alice, &400);
+
+    assert_eq!(f.client.balance(&f.alice), 600);
+    assert_eq!(f.client.balance(&f.bob), 1000);
+    assert_eq!(f.client.total_supply(), 1600);
 }
 
 #[test]
@@ -245,13 +262,27 @@ fn the_admin_alone_cannot_mint() {
 
 #[test]
 #[should_panic(expected = "Error(Contract, #1)")]
-fn a_minter_cannot_burn() {
+fn a_minter_cannot_force_burn() {
     let env = Env::default();
     let f = setup(&env);
 
     f.client.grant_role(&f.admin, &MINTER_ROLE, &f.alice);
     f.client.mint(&f.alice, &f.bob, &1000);
-    f.client.burn(&f.alice, &f.bob, &100);
+    f.client.force_burn(&f.alice, &f.bob, &100);
+}
+
+#[test]
+#[should_panic(expected = "InvalidAction")]
+fn burn_requires_the_owner_to_authorize() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let f = setup(&env);
+
+    f.client.grant_role(&f.admin, &MINTER_ROLE, &f.alice);
+    f.client.mint(&f.alice, &f.bob, &1000);
+
+    env.set_auths(&[]);
+    f.client.burn(&f.bob, &100);
 }
 
 #[test]
@@ -283,8 +314,7 @@ fn burn_rejects_more_than_the_balance() {
     let env = Env::default();
     let f = setup(&env);
 
-    f.client.grant_role(&f.admin, &BURNER_ROLE, &f.alice);
-    f.client.burn(&f.alice, &f.bob, &1);
+    f.client.burn(&f.bob, &1);
 }
 
 // --- authorization ----------------------------------------------------------

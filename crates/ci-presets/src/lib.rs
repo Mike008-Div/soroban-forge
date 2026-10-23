@@ -1144,6 +1144,62 @@ mod tests {
         assert!(contents.contains("v*.*.*"));
     }
 
+    /// The `.sha256` and `.sig` files are written into `target/`, which the
+    /// reproducibility checks wipe with `cargo clean` (#608). They must be
+    /// produced after every step that deletes or overwrites them, and the
+    /// release step must fail rather than silently drop a missing file.
+    #[test]
+    fn github_release_preset_signs_after_reproducibility_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        generate(dir.path(), "github", "my-contract", false, true, &base_opts(), false).unwrap();
+        let contents = std::fs::read_to_string(dir.path().join(".github/workflows/release.yml")).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&contents).expect("valid YAML");
+        let steps = doc["jobs"]["build-and-release"]["steps"]
+            .as_sequence()
+            .expect("steps must be a sequence");
+
+        let position_of = |needle: &str| {
+            steps
+                .iter()
+                .position(|step| {
+                    step.get("run")
+                        .and_then(|run| run.as_str())
+                        .is_some_and(|run| run.contains(needle))
+                        || step.get("name").and_then(|name| name.as_str()) == Some(needle)
+                })
+                .unwrap_or_else(|| panic!("no step matching {needle:?}"))
+        };
+
+        let clean = position_of("cargo clean");
+        let container = position_of("docker run");
+        let checksum = position_of("Checksum");
+        let sign = position_of("Sign release artifacts");
+        let release = position_of("Create release");
+
+        assert!(
+            clean < checksum,
+            "checksum must be produced after the cargo clean reproducibility check"
+        );
+        assert!(
+            container < checksum,
+            "checksum must be produced after the pinned-container reproducibility check"
+        );
+        assert!(
+            checksum < sign,
+            "the checksum file must exist before it is signed"
+        );
+        assert!(
+            sign < release,
+            "signatures must be produced before the release upload"
+        );
+
+        assert_eq!(
+            steps[release]["with"]["fail_on_unmatched_files"],
+            serde_yaml::Value::Bool(true),
+            "the release step must fail when an expected file is missing"
+        );
+    }
+
     #[test]
     fn ci_init_path_flag_is_honored() {
         let matches = CiPresetsPlugin

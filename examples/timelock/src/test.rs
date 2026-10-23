@@ -355,3 +355,97 @@ fn test_role_management_and_min_delay_update() {
     ctx.timelock.set_min_delay(&ctx.admin, &172_800);
     assert_eq!(ctx.timelock.get_min_delay(), 172_800);
 }
+
+#[test]
+fn test_batch_queue_and_execute() {
+    let env = Env::default();
+    let ctx = setup(&env);
+
+    let start_ts = 1_000_000_u64;
+    env.ledger().with_mut(|li| li.timestamp = start_ts);
+
+    let call_a = OperationCall {
+        target: ctx.target_id.clone(),
+        function_name: Symbol::new(&env, "set_value"),
+        args: vec![&env, 21_u32.into_val(&env)],
+    };
+    let call_b = OperationCall {
+        target: ctx.target_id.clone(),
+        function_name: Symbol::new(&env, "set_value"),
+        args: vec![&env, 42_u32.into_val(&env)],
+    };
+    let calls = vec![&env, call_a, call_b];
+    let salt: BytesN<32> = BytesN::from_array(&env, &[9u8; 32]);
+
+    let batch_id = ctx.timelock.queue_batch(
+        &ctx.proposer,
+        &calls,
+        &ctx.min_delay,
+        &None,
+        &salt,
+    );
+
+    env.ledger()
+        .with_mut(|li| li.timestamp = start_ts + ctx.min_delay);
+    assert_eq!(
+        ctx.timelock.get_operation_state(&batch_id),
+        OperationStatus::Ready
+    );
+
+    let _ = ctx.timelock.execute_batch(&ctx.executor, &calls, &None, &salt);
+
+    assert_eq!(ctx.target.get_value(), 42);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_batch_execution_requires_predecessor() {
+    let env = Env::default();
+    let ctx = setup(&env);
+
+    let start_ts = 1_000_000_u64;
+    env.ledger().with_mut(|li| li.timestamp = start_ts);
+
+    let predecessor_call = OperationCall {
+        target: ctx.target_id.clone(),
+        function_name: Symbol::new(&env, "set_value"),
+        args: vec![&env, 7_u32.into_val(&env)],
+    };
+    let predecessor_salt: BytesN<32> = BytesN::from_array(&env, &[10u8; 32]);
+    let predecessor_id = ctx.timelock.queue(
+        &ctx.proposer,
+        &ctx.target_id,
+        &predecessor_call.function_name,
+        &predecessor_call.args,
+        &ctx.min_delay,
+        &predecessor_salt,
+    );
+
+    let batch_call = OperationCall {
+        target: ctx.target_id.clone(),
+        function_name: Symbol::new(&env, "set_value"),
+        args: vec![&env, 99_u32.into_val(&env)],
+    };
+    let batch_calls = vec![&env, batch_call];
+    let batch_salt: BytesN<32> = BytesN::from_array(&env, &[11u8; 32]);
+
+    let batch_id = ctx.timelock.queue_batch(
+        &ctx.proposer,
+        &batch_calls,
+        &ctx.min_delay,
+        &Some(predecessor_id.clone()),
+        &batch_salt,
+    );
+
+    env.ledger()
+        .with_mut(|li| li.timestamp = start_ts + ctx.min_delay);
+
+    ctx.timelock.execute_batch(
+        &ctx.executor,
+        &batch_calls,
+        &Some(predecessor_id),
+        &batch_salt,
+    );
+
+    let _ = batch_id;
+}
