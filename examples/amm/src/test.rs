@@ -183,3 +183,76 @@ fn constructor_rejects_identical_tokens() {
     );
 }
 
+#[test]
+fn get_amount_in_quote_matches_actual_swap() {
+    let env = Env::default();
+    let (pool, token_a, token_b, alice) = setup(&env);
+    token_a.admin.mint(&alice, &2_000);
+    token_b.admin.mint(&alice, &2_000);
+    pool.deposit(&alice, &1_000, &1_000, &2_000, &2_000);
+
+    // Quote: buying 300 units of token B should cost how much in token A?
+    let quoted_in = pool.get_amount_in(&true, &300);
+    assert!(quoted_in > 0);
+
+    // Now actually perform the swap and verify the input matches.
+    let trader = Address::generate(&env);
+    token_a.admin.mint(&trader, &quoted_in + 10); // Give trader a little extra for safety
+    let actual_in = pool.swap(&trader, &true, &300, &quoted_in + 10);
+
+    // The quote should match the actual input spent.
+    assert_eq!(quoted_in, actual_in, "quote should match actual swap input");
+    assert_eq!(token_b.client.balance(&trader), 300);
+}
+
+#[test]
+fn get_amount_out_quote_matches_actual_swap() {
+    let env = Env::default();
+    let (pool, token_a, token_b, alice) = setup(&env);
+    token_a.admin.mint(&alice, &1_000);
+    token_b.admin.mint(&alice, &4_000);
+    pool.deposit(&alice, &1_000, &1_000, &4_000, &4_000);
+
+    // Quote: selling 200 units of token A gives how much token B?
+    let quoted_out = pool.get_amount_out(&false, &200);
+    assert!(quoted_out > 0);
+
+    // Perform the swap to buy exactly that amount and verify it matches.
+    let trader = Address::generate(&env);
+    token_a.admin.mint(&trader, &1_000);
+    let actual_in = pool.swap(&trader, &false, &quoted_out, &1_000);
+
+    // The trader paid for 'actual_in' to get 'quoted_out'.
+    // Now let's verify the inverse: get_amount_out(actual_in) == quoted_out
+    let (ra, rb) = pool.get_reserves();
+    let inverse_quote = pool.get_amount_out(&false, &actual_in);
+    assert_eq!(
+        inverse_quote, quoted_out,
+        "inverse quote should match original output"
+    );
+}
+
+#[test]
+#[should_panic]
+fn get_amount_in_with_zero_output_panics() {
+    let env = Env::default();
+    let (pool, token_a, token_b, alice) = setup(&env);
+    token_a.admin.mint(&alice, &1_000);
+    token_b.admin.mint(&alice, &1_000);
+    pool.deposit(&alice, &1_000, &1_000, &1_000, &1_000);
+
+    pool.get_amount_in(&true, &0);
+}
+
+#[test]
+#[should_panic]
+fn get_amount_out_with_zero_input_panics() {
+    let env = Env::default();
+    let (pool, token_a, token_b, alice) = setup(&env);
+    token_a.admin.mint(&alice, &1_000);
+    token_b.admin.mint(&alice, &1_000);
+    pool.deposit(&alice, &1_000, &1_000, &1_000, &1_000);
+
+    pool.get_amount_out(&false, &0);
+}
+
