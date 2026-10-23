@@ -19,7 +19,7 @@
 //! proposal is created, or the same tokens can be moved between accounts and
 //! voted with repeatedly.
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol, Val, Vec};
 
 /// Votes counted for each eligible voter.
 pub const VOTE_WEIGHT: i128 = 1;
@@ -34,6 +34,10 @@ pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
 pub struct Proposal {
     pub id: u64,
     pub proposer: Address,
+    /// Contract call dispatched when the proposal passes.
+    pub target: Address,
+    pub function_name: Symbol,
+    pub args: Vec<Val>,
     /// Ledger sequence the proposal was created in; only members registered
     /// at or before it may vote (membership snapshot).
     pub created_ledger: u32,
@@ -169,7 +173,13 @@ impl GovernanceContract {
     /// Create a new governance proposal (members only).
     ///
     /// Returns the proposal id.
-    pub fn create_proposal(env: Env, proposer: Address) -> u64 {
+    pub fn create_proposal(
+        env: Env,
+        proposer: Address,
+        target: Address,
+        function_name: Symbol,
+        args: Vec<Val>,
+    ) -> u64 {
         proposer.require_auth();
         if !Self::is_member(env.clone(), proposer.clone()) {
             panic!("only members can create proposals");
@@ -187,6 +197,9 @@ impl GovernanceContract {
         let proposal = Proposal {
             id,
             proposer,
+            target,
+            function_name,
+            args,
             created_ledger,
             voting_deadline: deadline,
             votes_for: 0,
@@ -286,7 +299,7 @@ impl GovernanceContract {
             .persistent()
             .extend_ttl(&prop_key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
 
-        // TODO: trigger on-chain action here (e.g. call another contract).
+        env.invoke_contract::<Val>(&proposal.target, &proposal.function_name, proposal.args);
     }
 
     /// Return the current state of a proposal.
