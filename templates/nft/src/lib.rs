@@ -32,6 +32,8 @@ pub enum DataKey {
     Owner(u32),
     Balance(Address),
     Uri(u32),
+    Approved(u32),                    // operator approved for a single token
+    ApprovedForAll(Address, Address), // (owner, operator) -> approved for all
 }
 
 fn extend_persistent_ttl(env: &Env, key: &DataKey) {
@@ -187,6 +189,108 @@ impl NftContract {
                 .set(&balance_key, &(balance - 1));
             extend_persistent_ttl(&env, &balance_key);
         }
+    }
+
+    /// Approve `operator` to transfer `token_id` on behalf of the owner.
+    /// Requires owner authorization.
+    pub fn approve(env: Env, to: Address, token_id: u32) {
+        let owner = Self::owner_of(env.clone(), token_id);
+        owner.require_auth();
+
+        let key = DataKey::Approved(token_id);
+        env.storage().persistent().set(&key, &to);
+        extend_persistent_ttl(&env, &key);
+    }
+
+    /// Return the operator approved to transfer `token_id`, or none if no approval.
+    pub fn get_approved(env: Env, token_id: u32) -> Option<Address> {
+        // Ensure token exists
+        let _owner = Self::owner_of(env.clone(), token_id);
+        let key = DataKey::Approved(token_id);
+        if let Some(approved) = env.storage().persistent().get::<_, Address>(&key) {
+            extend_persistent_ttl(&env, &key);
+            Some(approved)
+        } else {
+            None
+        }
+    }
+
+    /// Approve `operator` to transfer all tokens owned by `owner`.
+    /// Requires owner authorization.
+    pub fn set_approval_for_all(env: Env, operator: Address, approved: bool) {
+        let caller = env.invoker();
+        caller.require_auth();
+
+        let key = DataKey::ApprovedForAll(caller.clone(), operator);
+        if approved {
+            env.storage().persistent().set(&key, &true);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+        extend_persistent_ttl(&env, &key);
+    }
+
+    /// Return whether `operator` is approved to transfer all tokens owned by `owner`.
+    pub fn is_approved_for_all(env: Env, owner: Address, operator: Address) -> bool {
+        let key = DataKey::ApprovedForAll(owner, operator);
+        if let Some(approved) = env.storage().persistent().get::<_, bool>(&key) {
+            extend_persistent_ttl(&env, &key);
+            approved
+        } else {
+            false
+        }
+    }
+
+    /// Transfer `token_id` from `from` to `to` on behalf of an approved operator or owner.
+    /// Requires authorization from either the owner or an approved operator.
+    /// Clears single-token approval after successful transfer.
+    pub fn transfer_from(env: Env, from: Address, to: Address, token_id: u32) {
+        let owner = Self::owner_of(env.clone(), token_id);
+        let caller = env.invoker();
+
+        // Authorization: must be owner, or approved for this token, or approved for all
+        let is_owner = caller == owner;
+        let is_approved_for_token = matches!(
+            Self::get_approved(env.clone(), token_id),
+            Some(approved) if approved == caller
+        );
+        let is_approved_for_all_tokens = Self::is_approved_for_all(env.clone(), owner.clone(), caller.clone());
+
+        if !is_owner && !is_approved_for_token && !is_approved_for_all_tokens {
+            panic_with_error!(&env, Error::NotAuthorized);
+        }
+
+        // Require auth from owner or approved caller
+        if is_owner {
+            from.require_auth();
+        } else {
+            caller.require_auth();
+        }
+
+        // Perform transfer
+        let owner_key = DataKey::Owner(token_id);
+        env.storage().persistent().set(&owner_key, &to);
+        extend_persistent_ttl(&env, &owner_key);
+
+        let from_balance_key = DataKey::Balance(from.clone());
+        let from_balance = Self::balance_of(env.clone(), from);
+        if from_balance > 0 {
+            env.storage()
+                .persistent()
+                .set(&from_balance_key, &(from_balance - 1));
+            extend_persistent_ttl(&env, &from_balance_key);
+        }
+
+        let to_balance_key = DataKey::Balance(to.clone());
+        let to_balance = Self::balance_of(env.clone(), to.clone());
+        env.storage()
+            .persistent()
+            .set(&to_balance_key, &(to_balance + 1));
+        extend_persistent_ttl(&env, &to_balance_key);
+
+        // Clear single-token approval
+        let approval_key = DataKey::Approved(token_id);
+        env.storage().persistent().remove(&approval_key);
     }
 }
 
