@@ -27,7 +27,7 @@ pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
 pub const ADMIN_ROLE: Symbol = symbol_short!("admin");
 /// Demo role gating `mint`.
 pub const MINTER_ROLE: Symbol = symbol_short!("minter");
-/// Demo role gating `burn`.
+/// Demo role gating `force_burn`.
 pub const BURNER_ROLE: Symbol = symbol_short!("burner");
 
 #[contracterror]
@@ -346,9 +346,24 @@ impl AccessControlContract {
         Mint { to, amount }.publish(&env);
     }
 
-    /// Demo entrypoint gated on [`BURNER_ROLE`] — a second, separately
-    /// administered role over the same ledger.
-    pub fn burn(env: Env, caller: Address, from: Address, amount: i128) {
+    /// Ordinary burn: the owner authorizes burning their own balance.
+    pub fn burn(env: Env, from: Address, amount: i128) {
+        from.require_auth();
+        if amount <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
+        }
+        let balance = read_balance(&env, &from);
+        if balance < amount {
+            panic_with_error!(&env, Error::InsufficientBalance);
+        }
+        write_balance(&env, &from, balance - amount);
+        write_total_supply(&env, read_total_supply(&env) - amount);
+        Burn { from, amount }.publish(&env);
+    }
+
+    /// Admin-only burn: holders of [`BURNER_ROLE`] may burn any holder's
+    /// balance without that holder's authorization.
+    pub fn force_burn(env: Env, caller: Address, from: Address, amount: i128) {
         require_role(&env, &caller, &BURNER_ROLE);
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
